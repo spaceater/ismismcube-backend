@@ -27,7 +27,7 @@ var (
 func InitLLMConfig() {
 	LLMConfigure = LLMConfig{
 		ApiUrl:             getEnv("LLM_API_URL", "http://ai.api.maybered.com/AI-VMZ-8B/v1/chat/completions"),
-		ApiKey:             getEnv("LLM_API_KEY", "Kviagb.diagb2"),
+		ApiKey:             getEnv("LLM_API_KEY", ""),
 		MaxConcurrentTasks: getEnvInt("LLM_MAX_CONCURRENT_TASKS", 6),
 		Timeout:            getEnvInt("LLM_TIMEOUT", 20),
 		AvailableModels:    []string{"AI-VMZ-8B"},
