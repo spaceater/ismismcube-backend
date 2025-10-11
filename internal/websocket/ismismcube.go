@@ -2,9 +2,11 @@ package ws
 
 import (
 	"fmt"
+	"ismismcube-backend/internal/config"
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -24,16 +26,13 @@ func RegisterIsmismcubeClient(conn *websocket.Conn) {
 func UnregisterIsmismcubeClient(conn *websocket.Conn) {
 	ismismcubeClientsMux.Lock()
 	defer ismismcubeClientsMux.Unlock()
-	if _, ok := ismismcubeClients[conn]; ok {
-		delete(ismismcubeClients, conn)
-		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		go broadcastOnlineCount()
-	}
+	delete(ismismcubeClients, conn)
+	go broadcastOnlineCount()
 }
 
 func broadcastOnlineCount() {
 	ismismcubeClientsMux.RLock()
-	data := []byte(fmt.Sprintf(`broadcast:{"online":%d}`, len(ismismcubeClients)))
+	data := fmt.Appendf(nil, `broadcast:{"online":%d}`, len(ismismcubeClients))
 	clients := make([]*websocket.Conn, 0, len(ismismcubeClients))
 	for conn := range ismismcubeClients {
 		clients = append(clients, conn)
@@ -47,11 +46,8 @@ func broadcastOnlineCount() {
 			continue
 		}
 		clientInfo.WriteMutex.Lock()
-		defer clientInfo.WriteMutex.Unlock()
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("Write message error: %v", err)
-			go UnregisterIsmismcubeClient(conn)
-		}
+		conn.WriteMessage(websocket.TextMessage, data)
+		clientInfo.WriteMutex.Unlock()
 	}
 }
 
@@ -67,15 +63,48 @@ func HandleIsmismcubeOnline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	RegisterIsmismcubeClient(conn)
+	conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+		return nil
+	})
+	ticker := time.NewTicker(config.WSPingInterval)
 	go func() {
 		defer func() {
+			ticker.Stop()
+			conn.Close()
 			UnregisterIsmismcubeClient(conn)
 		}()
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					ismismcubeClientsMux.RLock()
+					clientInfo, exists := ismismcubeClients[conn]
+					ismismcubeClientsMux.RUnlock()
+					if exists {
+						clientInfo.WriteMutex.Lock()
+						conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(config.WSWriteWait))
+						clientInfo.WriteMutex.Unlock()
+					}
+				}
 				break
 			}
+		}
+	}()
+	go func() {
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			ismismcubeClientsMux.RLock()
+			clientInfo, exists := ismismcubeClients[conn]
+			ismismcubeClientsMux.RUnlock()
+			if !exists {
+				return
+			}
+			clientInfo.WriteMutex.Lock()
+			conn.WriteMessage(websocket.PingMessage, nil)
+			clientInfo.WriteMutex.Unlock()
 		}
 	}()
 }

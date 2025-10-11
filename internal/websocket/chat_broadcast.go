@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -24,40 +25,36 @@ var (
 type WebSocketBroadcaster struct{}
 
 func (w *WebSocketBroadcaster) BroadcastQueueStats(waiting, executing int, broadcastFlag int64) {
-	broadcastQueueStats(waiting, executing, broadcastFlag)
-}
-
-func RegisterChatClient(conn *websocket.Conn, waiting, executing int, broadcastFlag int64) {
-	chatClientsMux.Lock()
-	defer chatClientsMux.Unlock()
-	chatClients[conn] = &ClientInfo{}
-	go sendQueueStats(conn, []byte(fmt.Sprintf(`broadcast:{"waiting_count":%d,"executing_count":%d,"broadcast_flag":%d}`, waiting, executing, broadcastFlag)))
-  llmConfigData, err := json.Marshal(map[string]interface{}{
-		"max_concurrent_tasks": config.LLMConfigure.MaxConcurrentTasks,
-		"available_models":     config.LLMConfigure.AvailableModels,
-	})
-	if err != nil {
-		return
-	}
-	go sendQueueStats(conn, []byte(fmt.Sprintf("server-config:%s", string(llmConfigData))))
-	chatParamsData, err := json.Marshal(config.ChatParameters)
-  if err != nil {
-		return
-	}
-	go sendQueueStats(conn, []byte(fmt.Sprintf("chat-config:%s", string(chatParamsData))))
-}
-
-func broadcastQueueStats(waiting, executing int, broadcastFlag int64) {
 	chatClientsMux.RLock()
 	clients := make([]*websocket.Conn, 0, len(chatClients))
 	for conn := range chatClients {
 		clients = append(clients, conn)
 	}
 	chatClientsMux.RUnlock()
-	data := []byte(fmt.Sprintf(`broadcast:{"waiting_count":%d,"executing_count":%d,"broadcast_flag":%d}`, waiting, executing, broadcastFlag))
+	data := fmt.Appendf(nil, `broadcast:{"waiting_count":%d,"executing_count":%d,"broadcast_flag":%d}`, waiting, executing, broadcastFlag)
 	for _, conn := range clients {
 		sendQueueStats(conn, data)
 	}
+}
+
+func RegisterChatClient(conn *websocket.Conn, waiting, executing int, broadcastFlag int64) {
+	chatClientsMux.Lock()
+	defer chatClientsMux.Unlock()
+	chatClients[conn] = &ClientInfo{}
+	go sendQueueStats(conn, fmt.Appendf(nil, `broadcast:{"waiting_count":%d,"executing_count":%d,"broadcast_flag":%d}`, waiting, executing, broadcastFlag))
+	llmConfigData, err := json.Marshal(map[string]interface{}{
+		"max_concurrent_tasks": config.LLMConfigure.MaxConcurrentTasks,
+		"available_models":     config.LLMConfigure.AvailableModels,
+	})
+	if err != nil {
+		return
+	}
+	go sendQueueStats(conn, fmt.Appendf(nil, "server-config:%s", string(llmConfigData)))
+	chatParamsData, err := json.Marshal(config.ChatParameters)
+	if err != nil {
+		return
+	}
+	go sendQueueStats(conn, fmt.Appendf(nil, "chat-config:%s", string(chatParamsData)))
 }
 
 func sendQueueStats(conn *websocket.Conn, data []byte) {
@@ -68,20 +65,14 @@ func sendQueueStats(conn *websocket.Conn, data []byte) {
 		return
 	}
 	clientInfo.WriteMutex.Lock()
-	defer clientInfo.WriteMutex.Unlock()
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		log.Printf("Write message error: %v", err)
-		go UnregisterChatClient(conn)
-	}
+	conn.WriteMessage(websocket.TextMessage, data)
+	clientInfo.WriteMutex.Unlock()
 }
 
 func UnregisterChatClient(conn *websocket.Conn) {
 	chatClientsMux.Lock()
 	defer chatClientsMux.Unlock()
-	if _, ok := chatClients[conn]; ok {
-		delete(chatClients, conn)
-		conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	}
+	delete(chatClients, conn)
 }
 
 func HandleChatBroadcast(w http.ResponseWriter, r *http.Request) {
@@ -98,15 +89,48 @@ func HandleChatBroadcast(w http.ResponseWriter, r *http.Request) {
 	waiting, executing := server.GetTaskManager().GetQueueCount()
 	broadcastFlag := server.GetTaskManager().GetBroadcastFlag()
 	RegisterChatClient(conn, waiting, executing, broadcastFlag)
+	conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+		return nil
+	})
+	ticker := time.NewTicker(config.WSPingInterval)
 	go func() {
 		defer func() {
+			ticker.Stop()
+			conn.Close()
 			UnregisterChatClient(conn)
 		}()
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					chatClientsMux.RLock()
+					clientInfo, exists := chatClients[conn]
+					chatClientsMux.RUnlock()
+					if exists {
+						clientInfo.WriteMutex.Lock()
+						conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(config.WSWriteWait))
+						clientInfo.WriteMutex.Unlock()
+					}
+				}
 				break
 			}
+		}
+	}()
+	go func() {
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			chatClientsMux.RLock()
+			clientInfo, exists := chatClients[conn]
+			chatClientsMux.RUnlock()
+			if !exists {
+				return
+			}
+			clientInfo.WriteMutex.Lock()
+			conn.WriteMessage(websocket.PingMessage, nil)
+			clientInfo.WriteMutex.Unlock()
 		}
 	}()
 }
