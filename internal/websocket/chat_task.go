@@ -4,6 +4,7 @@ import (
 	"ismismcube-backend/internal/config"
 	"ismismcube-backend/internal/server"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -28,15 +29,21 @@ func HandleChatTask(w http.ResponseWriter, r *http.Request) {
 	}
 	taskManager := server.GetTaskManager()
 	taskManager.RegisterTaskConnection(websocketID, conn)
-	conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+	conn.SetReadDeadline(time.Now().Add(config.WSPongWaitFast))
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+		conn.SetReadDeadline(time.Now().Add(config.WSPingIntervalFast))
 		return nil
 	})
-	ticker := time.NewTicker(config.WSPingInterval)
+	ticker := time.NewTicker(config.WSPingIntervalFast)
 	go func() {
+		var isNormalClose bool
 		defer func() {
 			ticker.Stop()
+			if !isNormalClose {
+				if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+					tcpConn.SetLinger(0)
+				}
+			}
 			conn.Close()
 			taskManager.UnregisterTaskConnection(websocketID)
 		}()
@@ -44,7 +51,7 @@ func HandleChatTask(w http.ResponseWriter, r *http.Request) {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(config.WSWriteWait))
+					isNormalClose = true
 				}
 				break
 			}

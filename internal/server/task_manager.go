@@ -169,9 +169,8 @@ func (tm *TaskManager) executeTask(task *ChatTask) {
 		conn := task.WebSocketConn
 		tm.taskMutex.RUnlock()
 		if conn != nil {
-			errorMsg := []byte(fmt.Sprintf("data: {\"error\": \"Task timed out after %d minutes\"}\n\n", timeoutMinutes))
 			task.WriteMutex.Lock()
-			conn.WriteMessage(websocket.TextMessage, errorMsg)
+			conn.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, `data: {"error": "Task timed out after %d minutes"}`, timeoutMinutes))
 			task.WriteMutex.Unlock()
 		}
 	}()
@@ -191,7 +190,7 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	req, err := http.NewRequest("POST", config.LLMConfigure.ApiUrl, bytes.NewBuffer(task.Content))
 	if err != nil {
 		task.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, []byte("data: {\"error\": \"Failed to create request\"}\n\n"))
+		conn.WriteMessage(websocket.TextMessage, []byte(`data: {"error": "Failed to create request"}"`))
 		task.WriteMutex.Unlock()
 		return
 	}
@@ -204,7 +203,7 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	if err != nil {
 		log.Println("Failed to send request to AI API", err)
 		task.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, []byte("data: {\"error\": \"Failed to send request to AI API\"}\n\n"))
+		conn.WriteMessage(websocket.TextMessage, []byte(`data: {"error": "Failed to send request to AI API"}`))
 		task.WriteMutex.Unlock()
 		return
 	}
@@ -212,7 +211,7 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	if resp.StatusCode != http.StatusOK {
 		errorBody, _ := io.ReadAll(resp.Body)
 		task.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, `data: {\"error\": \"AI API returned status %d: %s\"}\n\n`, resp.StatusCode, string(errorBody)))
+		conn.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, `data: {"error": "AI API returned status %d: %s"}`, resp.StatusCode, string(errorBody)))
 		task.WriteMutex.Unlock()
 		return
 	}
@@ -227,8 +226,13 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 		}
 		if n > 0 {
 			task.WriteMutex.Lock()
-			conn.WriteMessage(websocket.TextMessage, buffer[:n])
+			// 需要设置写入超时，防止客户端异常断开后，tcp缓冲区已满导致websocket被长时间阻塞
+			conn.SetWriteDeadline(time.Now().Add(config.WSWriteWait))
+			err := conn.WriteMessage(websocket.TextMessage, buffer[:n])
 			task.WriteMutex.Unlock()
+			if err != nil {
+				return
+			}
 		}
 		if err != nil {
 			return
