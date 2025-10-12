@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"ismismcube-backend/internal/config"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -63,15 +64,21 @@ func HandleIsmismcubeOnline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	RegisterIsmismcubeClient(conn)
-	conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+	conn.SetReadDeadline(time.Now().Add(config.WSPongWaitSlow))
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(config.WSPongWait))
+		conn.SetReadDeadline(time.Now().Add(config.WSPongWaitSlow))
 		return nil
 	})
-	ticker := time.NewTicker(config.WSPingInterval)
+	ticker := time.NewTicker(config.WSPingIntervalSlow)
 	go func() {
+		var isNormalClose bool
 		defer func() {
 			ticker.Stop()
+			if !isNormalClose {
+				if tcpConn, ok := conn.UnderlyingConn().(*net.TCPConn); ok {
+					tcpConn.SetLinger(0)
+				}
+			}
 			conn.Close()
 			UnregisterIsmismcubeClient(conn)
 		}()
@@ -79,14 +86,7 @@ func HandleIsmismcubeOnline(w http.ResponseWriter, r *http.Request) {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					ismismcubeClientsMux.RLock()
-					clientInfo, exists := ismismcubeClients[conn]
-					ismismcubeClientsMux.RUnlock()
-					if exists {
-						clientInfo.WriteMutex.Lock()
-						conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(config.WSWriteWait))
-						clientInfo.WriteMutex.Unlock()
-					}
+					isNormalClose = true
 				}
 				break
 			}
@@ -96,15 +96,7 @@ func HandleIsmismcubeOnline(w http.ResponseWriter, r *http.Request) {
 		defer ticker.Stop()
 		for {
 			<-ticker.C
-			ismismcubeClientsMux.RLock()
-			clientInfo, exists := ismismcubeClients[conn]
-			ismismcubeClientsMux.RUnlock()
-			if !exists {
-				return
-			}
-			clientInfo.WriteMutex.Lock()
-			conn.WriteMessage(websocket.PingMessage, nil)
-			clientInfo.WriteMutex.Unlock()
+			conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(config.WSWriteWait))
 		}
 	}()
 }
