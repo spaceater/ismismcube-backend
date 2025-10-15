@@ -9,8 +9,8 @@ type LLMConfig struct {
 }
 
 type ChatParams struct {
-  Prompt           string  `json:"prompt"`
-  ContentSize      int     `json:"content_size"`
+	Prompt           string  `json:"prompt"`
+	ContentSize      int     `json:"content_size"`
 	MaxTokens        int     `json:"max_tokens"`
 	Temperature      float64 `json:"temperature"`
 	TopP             float64 `json:"top_p"`
@@ -24,22 +24,19 @@ var (
 	ChatParameters ChatParams
 )
 
-func InitLLMConfig() {
-	LLMConfigure = LLMConfig{
-		ApiUrl:             getEnv("LLM_API_URL", "http://ai.api.maybered.com/AI-VMZ-8B/v1/chat/completions"),
-		ApiKey:             getEnv("LLM_API_KEY", ""),
-		MaxConcurrentTasks: getEnvInt("LLM_MAX_CONCURRENT_TASKS", 6),
-		Timeout:            getEnvInt("LLM_TIMEOUT", 20),
-		AvailableModels:    []string{"AI-VMZ-8B"},
-	}
-	ChatParameters = ChatParams{
-		Prompt:           getEnv("LLM_PROMPT", "你是一个AI助手，你的知识广泛，尤其精通哲学、历史、文学等人文学科，你需要以严谨而逻辑清晰的方式响应用户提问。"),
-		ContentSize:      getEnvInt("LLM_CONTENT_SIZE", 8192),
-		MaxTokens:        getEnvInt("LLM_MAX_TOKENS", 2048),
-		Temperature:      getEnvFloat("LLM_TEMPERATURE", 0.3),
-		TopP:             getEnvFloat("LLM_TOP_P", 0.7),
-		FrequencyPenalty: getEnvFloat("LLM_FREQUENCY_PENALTY", 0.0),
-		PresencePenalty:  getEnvFloat("LLM_PRESENCE_PENALTY", 0.0),
-		RepeatPenalty:    getEnvFloat("LLM_REPEAT_PENALTY", 1.05),
-	}
+func InitLLMConfig(configData map[string]interface{}) {
+	LLMConfigure.ApiUrl = getConfigString(getJSONTag(LLMConfig{}, "ApiUrl"), configData, "")
+	LLMConfigure.ApiKey = getConfigString(getJSONTag(LLMConfig{}, "ApiKey"), configData, "")
+	LLMConfigure.MaxConcurrentTasks = getConfigInt(getJSONTag(LLMConfig{}, "MaxConcurrentTasks"), configData, 6)
+	LLMConfigure.Timeout = getConfigInt(getJSONTag(LLMConfig{}, "Timeout"), configData, 20)
+	LLMConfigure.AvailableModels = getConfigStringSlice(getJSONTag(LLMConfig{}, "AvailableModels"), configData, []string{"AI-VMZ-8B"})
+
+	ChatParameters.Prompt = getConfigString(getJSONTag(ChatParams{}, "Prompt"), configData, "你是一个AI助手，你的知识广泛，尤其精通哲学、历史、文学等人文学科，你需要以严谨而逻辑清晰的方式响应用户提问。")
+	ChatParameters.ContentSize = getConfigInt(getJSONTag(ChatParams{}, "ContentSize"), configData, 8192)
+	ChatParameters.MaxTokens = getConfigInt(getJSONTag(ChatParams{}, "MaxTokens"), configData, 2048)
+	ChatParameters.Temperature = getConfigFloat(getJSONTag(ChatParams{}, "Temperature"), configData, 0.3)
+	ChatParameters.TopP = getConfigFloat(getJSONTag(ChatParams{}, "TopP"), configData, 0.7)
+	ChatParameters.FrequencyPenalty = getConfigFloat(getJSONTag(ChatParams{}, "FrequencyPenalty"), configData, 0.0)
+	ChatParameters.PresencePenalty = getConfigFloat(getJSONTag(ChatParams{}, "PresencePenalty"), configData, 0.0)
+	ChatParameters.RepeatPenalty = getConfigFloat(getJSONTag(ChatParams{}, "RepeatPenalty"), configData, 1.05)
 }
