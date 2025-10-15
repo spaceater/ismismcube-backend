@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"ismismcube-backend/internal/config"
+	"ismismcube-backend/internal/model"
+	"ismismcube-backend/internal/toolkit"
 	"log"
 	"net/http"
 	"sync"
@@ -21,12 +23,12 @@ type ChatTask struct {
 	WriteMutex    sync.Mutex      `json:"-"`
 }
 
-type QueueBroadcaster interface {
-	BroadcastQueueStats(waiting, executing int, broadcastFlag int64)
+type QueuePositionData struct {
+	QueuePosition int `json:"queue_position"`
 }
 
-type ExecutedTaskIncrementer interface {
-	IncrementExecutedTask() error
+type QueueBroadcaster interface {
+	BroadcastQueueStats(waiting, executing int, broadcastFlag int64)
 }
 
 type TaskManager struct {
@@ -37,7 +39,6 @@ type TaskManager struct {
 	broadcaster    QueueBroadcaster
 	broadcastFlag  int64
 	broadcastMutex sync.Mutex
-	incrementer    ExecutedTaskIncrementer
 }
 
 var (
@@ -48,14 +49,13 @@ func GetTaskManager() *TaskManager {
 	return taskManager
 }
 
-func InitTaskManager(broadcaster QueueBroadcaster, incrementer ExecutedTaskIncrementer) {
+func InitTaskManager(broadcaster QueueBroadcaster) {
 	taskManager = &TaskManager{
 		pendingTasks:   make(map[string]*ChatTask),
 		waitingTasks:   make([]*ChatTask, 0),
 		executingTasks: make(map[string]*ChatTask),
 	}
 	taskManager.broadcaster = broadcaster
-	taskManager.incrementer = incrementer
 }
 
 func (tm *TaskManager) CreateChatTask(content []byte, websocketID string) {
@@ -142,9 +142,7 @@ func (tm *TaskManager) checkTasks() {
 }
 
 func (tm *TaskManager) executeTask(task *ChatTask) {
-	if tm.incrementer != nil {
-		tm.incrementer.IncrementExecutedTask()
-	}
+	model.ExecutedTask.GetAndIncrement()
 	defer func() {
 		tm.taskMutex.Lock()
 		conn := task.WebSocketConn
@@ -169,8 +167,18 @@ func (tm *TaskManager) executeTask(task *ChatTask) {
 		conn := task.WebSocketConn
 		tm.taskMutex.RUnlock()
 		if conn != nil {
+			data := &toolkit.MessageData{
+				Type: "data",
+				Data: toolkit.ErrorData{
+					Error: fmt.Sprintf("Task timed out after %d minutes", timeoutMinutes),
+				},
+			}
+			msg, err := data.ToBytes()
+			if err != nil {
+				return
+			}
 			task.WriteMutex.Lock()
-			conn.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, `data: {"error": "Task timed out after %d minutes"}`, timeoutMinutes))
+			conn.WriteMessage(websocket.TextMessage, msg)
 			task.WriteMutex.Unlock()
 		}
 	}()
@@ -189,8 +197,13 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	}
 	req, err := http.NewRequest("POST", config.LLMConfigure.ApiUrl, bytes.NewBuffer(task.Content))
 	if err != nil {
+		data := &toolkit.MessageData{
+			Type: "data",
+			Data: toolkit.ErrorData{Error: "Failed to create request"},
+		}
+		msg, _ := data.ToBytes()
 		task.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, []byte(`data: {"error": "Failed to create request"}"`))
+		conn.WriteMessage(websocket.TextMessage, msg)
 		task.WriteMutex.Unlock()
 		return
 	}
@@ -202,16 +215,28 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Println("Failed to send request to AI API", err)
+		data := &toolkit.MessageData{
+			Type: "data",
+			Data: toolkit.ErrorData{Error: "Failed to send request to AI API"},
+		}
+		msg, _ := data.ToBytes()
 		task.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, []byte(`data: {"error": "Failed to send request to AI API"}`))
+		conn.WriteMessage(websocket.TextMessage, msg)
 		task.WriteMutex.Unlock()
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		errorBody, _ := io.ReadAll(resp.Body)
+		data := &toolkit.MessageData{
+			Type: "data",
+			Data: toolkit.ErrorData{
+				Error: fmt.Sprintf("AI API returned status %d: %s", resp.StatusCode, string(errorBody)),
+			},
+		}
+		msg, _ := data.ToBytes()
 		task.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, `data: {"error": "AI API returned status %d: %s"}`, resp.StatusCode, string(errorBody)))
+		conn.WriteMessage(websocket.TextMessage, msg)
 		task.WriteMutex.Unlock()
 		return
 	}
@@ -265,8 +290,18 @@ func (tm *TaskManager) sendTaskPosition(task *ChatTask, position int) {
 	if conn == nil {
 		return
 	}
+	data := &toolkit.MessageData{
+		Type: "broadcast",
+		Data: QueuePositionData{
+			QueuePosition: position,
+		},
+	}
+	msg, err := data.ToBytes()
+	if err != nil {
+		return
+	}
 	task.WriteMutex.Lock()
-	conn.WriteMessage(websocket.TextMessage, fmt.Appendf(nil, `broadcast:{"queue_position":%d}`, position))
+	conn.WriteMessage(websocket.TextMessage, msg)
 	task.WriteMutex.Unlock()
 }
 

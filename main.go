@@ -7,15 +7,14 @@ import (
 
 	"ismismcube-backend/internal/api"
 	"ismismcube-backend/internal/config"
-	"ismismcube-backend/internal/handler"
 	"ismismcube-backend/internal/server"
-	ws "ismismcube-backend/internal/websocket"
+	"ismismcube-backend/internal/websocket"
 )
 
 func main() {
 	config.Init()
 
-	server.InitTaskManager(&ws.WebSocketBroadcaster{}, &handler.WebStatisticsHandler{})
+	server.InitTaskManager(&ws.WebSocketBroadcaster{})
 
 	api.Init()
 

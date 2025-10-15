@@ -1,10 +1,9 @@
 package ws
 
 import (
-	"encoding/json"
-	"fmt"
 	"ismismcube-backend/internal/config"
 	"ismismcube-backend/internal/server"
+	"ismismcube-backend/internal/toolkit"
 	"log"
 	"net"
 	"net/http"
@@ -16,6 +15,17 @@ import (
 
 type ClientInfo struct {
 	WriteMutex sync.Mutex
+}
+
+type QueueStatsData struct {
+	WaitingCount   int   `json:"waiting_count"`
+	ExecutingCount int   `json:"executing_count"`
+	BroadcastFlag  int64 `json:"broadcast_flag"`
+}
+
+type LLMConfigData struct {
+	MaxConcurrentTasks int      `json:"max_concurrent_tasks"`
+	AvailableModels    []string `json:"available_models"`
 }
 
 var (
@@ -32,30 +42,64 @@ func (w *WebSocketBroadcaster) BroadcastQueueStats(waiting, executing int, broad
 		clients = append(clients, conn)
 	}
 	chatClientsMux.RUnlock()
-	data := fmt.Appendf(nil, `broadcast:{"waiting_count":%d,"executing_count":%d,"broadcast_flag":%d}`, waiting, executing, broadcastFlag)
+	data := &toolkit.MessageData{
+		Type: "broadcast",
+		Data: QueueStatsData{
+			WaitingCount:   waiting,
+			ExecutingCount: executing,
+			BroadcastFlag:  broadcastFlag,
+		},
+	}
+	msg, err := data.ToBytes()
+	if err != nil {
+		return
+	}
 	for _, conn := range clients {
-		sendQueueStats(conn, data)
+		sendQueueStats(conn, msg)
 	}
 }
 
 func RegisterChatClient(conn *websocket.Conn, waiting, executing int, broadcastFlag int64) {
 	chatClientsMux.Lock()
-	defer chatClientsMux.Unlock()
 	chatClients[conn] = &ClientInfo{}
-	go sendQueueStats(conn, fmt.Appendf(nil, `broadcast:{"waiting_count":%d,"executing_count":%d,"broadcast_flag":%d}`, waiting, executing, broadcastFlag))
-	llmConfigData, err := json.Marshal(map[string]interface{}{
-		"max_concurrent_tasks": config.LLMConfigure.MaxConcurrentTasks,
-		"available_models":     config.LLMConfigure.AvailableModels,
-	})
+	chatClientsMux.Unlock()
+	// 发送队列统计信息
+	statsData := &toolkit.MessageData{
+		Type: "broadcast",
+		Data: QueueStatsData{
+			WaitingCount:   waiting,
+			ExecutingCount: executing,
+			BroadcastFlag:  broadcastFlag,
+		},
+	}
+	statsMsg, err := statsData.ToBytes()
 	if err != nil {
 		return
 	}
-	go sendQueueStats(conn, fmt.Appendf(nil, "server-config:%s", string(llmConfigData)))
-	chatParamsData, err := json.Marshal(config.ChatParameters)
+	go sendQueueStats(conn, statsMsg)
+	// 发送LLM配置信息
+	llmConfigData := &toolkit.MessageData{
+		Type: "server-config",
+		Data: LLMConfigData{
+			MaxConcurrentTasks: config.LLMConfigure.MaxConcurrentTasks,
+			AvailableModels:    config.LLMConfigure.AvailableModels,
+		},
+	}
+	llmConfigMsg, err := llmConfigData.ToBytes()
 	if err != nil {
 		return
 	}
-	go sendQueueStats(conn, fmt.Appendf(nil, "chat-config:%s", string(chatParamsData)))
+	go sendQueueStats(conn, llmConfigMsg)
+	// 发送聊天参数配置
+	chatConfigData := &toolkit.MessageData{
+		Type: "chat-config",
+		Data: config.ChatParameters,
+	}
+	chatConfigMsg, err := chatConfigData.ToBytes()
+	if err != nil {
+		return
+	}
+	go sendQueueStats(conn, chatConfigMsg)
 }
 
 func sendQueueStats(conn *websocket.Conn, data []byte) {

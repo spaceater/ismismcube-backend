@@ -1,8 +1,8 @@
 package ws
 
 import (
-	"fmt"
 	"ismismcube-backend/internal/config"
+	"ismismcube-backend/internal/toolkit"
 	"log"
 	"net"
 	"net/http"
@@ -11,6 +11,10 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+type OnlineCountData struct {
+	Online int `json:"online"`
+}
 
 var (
 	ismismcubeClients    = make(map[*websocket.Conn]*ClientInfo)
@@ -33,12 +37,21 @@ func UnregisterIsmismcubeClient(conn *websocket.Conn) {
 
 func broadcastOnlineCount() {
 	ismismcubeClientsMux.RLock()
-	data := fmt.Appendf(nil, `broadcast:{"online":%d}`, len(ismismcubeClients))
+	data := &toolkit.MessageData{
+		Type: "broadcast",
+		Data: OnlineCountData{
+			Online: len(ismismcubeClients),
+		},
+	}
 	clients := make([]*websocket.Conn, 0, len(ismismcubeClients))
 	for conn := range ismismcubeClients {
 		clients = append(clients, conn)
 	}
 	ismismcubeClientsMux.RUnlock()
+	msg, err := data.ToBytes()
+	if err != nil {
+		return
+	}
 	for _, conn := range clients {
 		ismismcubeClientsMux.RLock()
 		clientInfo, exists := ismismcubeClients[conn]
@@ -47,7 +60,7 @@ func broadcastOnlineCount() {
 			continue
 		}
 		clientInfo.WriteMutex.Lock()
-		conn.WriteMessage(websocket.TextMessage, data)
+		conn.WriteMessage(websocket.TextMessage, msg)
 		clientInfo.WriteMutex.Unlock()
 	}
 }
