@@ -1,7 +1,7 @@
 package config
 
 type LLMConfig struct {
-	ApiUrl             string   `json:"api_url"`
+	BaseApiUrl         string   `json:"base_api_url"`
 	ApiKey             string   `json:"api_key"`
 	MaxConcurrentTasks int      `json:"max_concurrent_tasks"`
 	Timeout            int      `json:"timeout"`
@@ -25,7 +25,7 @@ var (
 )
 
 func InitLLMConfig(configData map[string]interface{}) {
-	LLMConfigure.ApiUrl = getConfigString(getJSONTag(LLMConfig{}, "ApiUrl"), configData, "")
+	LLMConfigure.BaseApiUrl = getConfigString(getJSONTag(LLMConfig{}, "BaseApiUrl"), configData, "")
 	LLMConfigure.ApiKey = getConfigString(getJSONTag(LLMConfig{}, "ApiKey"), configData, "")
 	LLMConfigure.MaxConcurrentTasks = getConfigInt(getJSONTag(LLMConfig{}, "MaxConcurrentTasks"), configData, 6)
 	LLMConfigure.Timeout = getConfigInt(getJSONTag(LLMConfig{}, "Timeout"), configData, 20)

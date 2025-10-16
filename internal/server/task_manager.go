@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"ismismcube-backend/internal/config"
@@ -168,7 +169,7 @@ func (tm *TaskManager) executeTask(task *ChatTask) {
 		tm.taskMutex.RUnlock()
 		if conn != nil {
 			data := &toolkit.MessageData{
-				Type: "data",
+				Type: "error",
 				Data: toolkit.ErrorData{
 					Error: fmt.Sprintf("Task timed out after %d minutes", timeoutMinutes),
 				},
@@ -192,13 +193,51 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	if conn == nil {
 		return
 	}
+	var requestData map[string]interface{}
+	if err := json.Unmarshal(task.Content, &requestData); err != nil {
+		data := &toolkit.MessageData{
+			Type: "error",
+			Data: toolkit.ErrorData{Error: "Failed to parse request content"},
+		}
+		msg, _ := data.ToBytes()
+		task.WriteMutex.Lock()
+		conn.WriteMessage(websocket.TextMessage, msg)
+		task.WriteMutex.Unlock()
+		return
+	}
+	var modelName string
+	if model, ok := requestData["model"].(string); ok && model != "" {
+		modelName = model
+	} else {
+		if len(config.LLMConfigure.AvailableModels) == 0 {
+			data := &toolkit.MessageData{
+				Type: "error",
+				Data: toolkit.ErrorData{Error: "No available models"},
+			}
+			msg, _ := data.ToBytes()
+			task.WriteMutex.Lock()
+			conn.WriteMessage(websocket.TextMessage, msg)
+			task.WriteMutex.Unlock()
+			return
+		}
+		modelName = config.LLMConfigure.AvailableModels[0]
+	}
+	baseApiUrl := config.LLMConfigure.BaseApiUrl
+	var LLMApiUrl string
+	domainStart := bytes.Index([]byte(baseApiUrl), []byte("://")) + 3
+	pathStart := bytes.IndexByte([]byte(baseApiUrl[domainStart:]), '/')
+	if pathStart == -1 {
+		LLMApiUrl = baseApiUrl + "/" + modelName
+	} else {
+		LLMApiUrl = baseApiUrl[:domainStart+pathStart] + "/" + modelName + baseApiUrl[domainStart+pathStart:]
+	}
 	client := &http.Client{
 		Timeout: time.Duration(config.LLMConfigure.Timeout) * time.Minute,
 	}
-	req, err := http.NewRequest("POST", config.LLMConfigure.ApiUrl, bytes.NewBuffer(task.Content))
+	req, err := http.NewRequest("POST", LLMApiUrl, bytes.NewBuffer(task.Content))
 	if err != nil {
 		data := &toolkit.MessageData{
-			Type: "data",
+			Type: "error",
 			Data: toolkit.ErrorData{Error: "Failed to create request"},
 		}
 		msg, _ := data.ToBytes()
@@ -216,7 +255,7 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	if err != nil {
 		log.Println("Failed to send request to AI API", err)
 		data := &toolkit.MessageData{
-			Type: "data",
+			Type: "error",
 			Data: toolkit.ErrorData{Error: "Failed to send request to AI API"},
 		}
 		msg, _ := data.ToBytes()
@@ -229,7 +268,7 @@ func (tm *TaskManager) callLLM(task *ChatTask) {
 	if resp.StatusCode != http.StatusOK {
 		errorBody, _ := io.ReadAll(resp.Body)
 		data := &toolkit.MessageData{
-			Type: "data",
+			Type: "error",
 			Data: toolkit.ErrorData{
 				Error: fmt.Sprintf("AI API returned status %d: %s", resp.StatusCode, string(errorBody)),
 			},
